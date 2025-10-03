@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gyro + QR Test</title>
+<title>Gyro + QR Reference Test</title>
 <style>
   body { font-family: sans-serif; margin:0; padding:0; overflow:hidden; }
   canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
@@ -24,7 +24,10 @@ const ctx = canvas.getContext('2d');
 
 let video, gyroData = {alpha:0, beta:0, gamma:0};
 let fusedOrientation = {alpha:0, beta:0, gamma:0};
-const alphaWeight = 0.95; // gyro vs QR fusion weight
+const alphaWeight = 0.9; // smoothing factor
+
+let referenceOffset = 0;
+let firstDetection = true;
 
 enableBtn.addEventListener('click', async () => {
   enableBtn.style.display = 'none';
@@ -42,7 +45,6 @@ enableBtn.addEventListener('click', async () => {
       try { await DeviceOrientationEvent.requestPermission(); } catch(e){ }
     }
 
-    // check camera support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         info.textContent = "Camera not supported. Use HTTPS or a modern browser.";
         return;
@@ -58,7 +60,6 @@ enableBtn.addEventListener('click', async () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
-    // deviceorientation listener (works on Android & iOS)
     window.addEventListener('deviceorientation', e=>{
       gyroData.alpha = e.alpha||0;
       gyroData.beta = e.beta||0;
@@ -86,29 +87,31 @@ function tick(){
   const code = jsQR(imgData.data,imgData.width,imgData.height);
 
   if(code){
-    // draw QR borders
     drawLine(code.location.topLeftCorner, code.location.topRightCorner, "red");
     drawLine(code.location.topRightCorner, code.location.bottomRightCorner, "red");
     drawLine(code.location.bottomRightCorner, code.location.bottomLeftCorner, "red");
     drawLine(code.location.bottomLeftCorner, code.location.topLeftCorner, "red");
 
-    // approximate QR rotation angle (Z axis)
     const dx = code.location.topRightCorner.x - code.location.topLeftCorner.x;
     const dy = code.location.topRightCorner.y - code.location.topLeftCorner.y;
     const qrAngle = Math.atan2(dy, dx) * 180/Math.PI;
 
-    // fuse gyro + QR
-    fusedOrientation.alpha = alphaWeight * gyroData.alpha + (1-alphaWeight) * qrAngle;
-    fusedOrientation.beta  = gyroData.beta;
-    fusedOrientation.gamma = gyroData.gamma;
+    if(firstDetection){
+      referenceOffset = gyroData.alpha - qrAngle;
+      firstDetection = false;
+    }
+
+    let correctedAlpha = gyroData.alpha - referenceOffset;
+    fusedOrientation.alpha = alphaWeight * fusedOrientation.alpha + (1-alphaWeight) * correctedAlpha;
   } else {
-    fusedOrientation.alpha = gyroData.alpha;
-    fusedOrientation.beta  = gyroData.beta;
-    fusedOrientation.gamma = gyroData.gamma;
+    fusedOrientation.alpha = gyroData.alpha - referenceOffset;
   }
 
+  fusedOrientation.beta  = gyroData.beta;
+  fusedOrientation.gamma = gyroData.gamma;
+
   info.textContent = `
-Fused Orientation:
+Fused Orientation (with QR reference):
 Alpha (Z axis): ${fusedOrientation.alpha.toFixed(1)}
 Beta  (X axis): ${fusedOrientation.beta.toFixed(1)}
 Gamma (Y axis): ${fusedOrientation.gamma.toFixed(1)}
