@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gyro + QR Test</title>
+<style>
+  body { font-family: sans-serif; margin:0; padding:0; overflow:hidden; }
+  canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  #info { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.5); color:white; padding:8px; border-radius:8px; font-size:14px; z-index:10;}
+  #enableBtn { font-size:16px; padding:8px 12px; border-radius:8px; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:10;}
+</style>
+</head>
+<body>
+<button id="enableBtn">Enable Sensors & Camera</button>
+<div id="info"></div>
+<canvas id="overlay"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+const enableBtn = document.getElementById('enableBtn');
+const info = document.getElementById('info');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+
+let video, gyroData = {alpha:0, beta:0, gamma:0};
+let fusedOrientation = {alpha:0, beta:0, gamma:0};
+const alphaWeight = 0.95; // gyro vs QR fusion weight
+
+enableBtn.addEventListener('click', async () => {
+  enableBtn.style.display = 'none';
+  info.textContent = "Requesting sensors & camera...";
+
+  try {
+    // iOS permission handling
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const resp = await DeviceMotionEvent.requestPermission();
+      if(resp !== 'granted'){ info.textContent="Gyro permission denied"; return; }
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      try { await DeviceOrientationEvent.requestPermission(); } catch(e){ }
+    }
+
+    // check camera support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        info.textContent = "Camera not supported. Use HTTPS or a modern browser.";
+        return;
+    }
+
+    // start camera
+    video = document.createElement('video');
+    video.setAttribute('playsinline', 'true');
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    video.srcObject = stream;
+    await video.play();
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // deviceorientation listener (works on Android & iOS)
+    window.addEventListener('deviceorientation', e=>{
+      gyroData.alpha = e.alpha||0;
+      gyroData.beta = e.beta||0;
+      gyroData.gamma = e.gamma||0;
+    }, true);
+
+    requestAnimationFrame(tick);
+    info.textContent = "Sensors enabled! Point camera at QR code.";
+  } catch(err){ info.textContent = "Error: " + err; }
+});
+
+function tick(){
+  if(!video) return;
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+
+  // QR detection
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCanvas.width = video.videoWidth;
+  tempCanvas.height = video.videoHeight;
+  tempCtx.drawImage(video,0,0,tempCanvas.width,tempCanvas.height);
+  const imgData = tempCtx.getImageData(0,0,tempCanvas.width,tempCanvas.height);
+  const code = jsQR(imgData.data,imgData.width,imgData.height);
+
+  if(code){
+    // draw QR borders
+    drawLine(code.location.topLeftCorner, code.location.topRightCorner, "red");
+    drawLine(code.location.topRightCorner, code.location.bottomRightCorner, "red");
+    drawLine(code.location.bottomRightCorner, code.location.bottomLeftCorner, "red");
+    drawLine(code.location.bottomLeftCorner, code.location.topLeftCorner, "red");
+
+    // approximate QR rotation angle (Z axis)
+    const dx = code.location.topRightCorner.x - code.location.topLeftCorner.x;
+    const dy = code.location.topRightCorner.y - code.location.topLeftCorner.y;
+    const qrAngle = Math.atan2(dy, dx) * 180/Math.PI;
+
+    // fuse gyro + QR
+    fusedOrientation.alpha = alphaWeight * gyroData.alpha + (1-alphaWeight) * qrAngle;
+    fusedOrientation.beta  = gyroData.beta;
+    fusedOrientation.gamma = gyroData.gamma;
+  } else {
+    fusedOrientation.alpha = gyroData.alpha;
+    fusedOrientation.beta  = gyroData.beta;
+    fusedOrientation.gamma = gyroData.gamma;
+  }
+
+  info.textContent = `
+Fused Orientation:
+Alpha (Z axis): ${fusedOrientation.alpha.toFixed(1)}
+Beta  (X axis): ${fusedOrientation.beta.toFixed(1)}
+Gamma (Y axis): ${fusedOrientation.gamma.toFixed(1)}
+`;
+
+  ctx.save();
+  ctx.translate(canvas.width/2, canvas.height/2);
+  ctx.rotate(fusedOrientation.alpha * Math.PI/180);
+  ctx.fillStyle = 'rgba(0,255,0,0.5)';
+  ctx.fillRect(-50,-50,100,100);
+  ctx.restore();
+
+  requestAnimationFrame(tick);
+}
+
+function drawLine(p1,p2,color){
+  ctx.beginPath();
+  ctx.moveTo(p1.x*(canvas.width/video.videoWidth), p1.y*(canvas.height/video.videoHeight));
+  ctx.lineTo(p2.x*(canvas.width/video.videoWidth), p2.y*(canvas.height/video.videoHeight));
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+</script>
+</body>
+</html>
